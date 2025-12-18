@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 from FinMind.data import DataLoader
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # 1. 網頁基本設定
 st.set_page_config(page_title="AI 選股儀表板", layout="wide")
@@ -15,8 +15,13 @@ dl = DataLoader()
 def get_top_turnover(market_types, count=100):
     """獲取成交值排行榜標的"""
     try:
-        target_date = datetime.now().strftime('%Y-%m-%d')
-        df_price = dl.taiwan_stock_price_all(date=target_date)
+        # 獲取最新交易日行情
+        df_price = dl.taiwan_stock_price_all(date=datetime.now().strftime('%Y-%m-%d'))
+        if df_price.empty:
+             # 若當日無資料則嘗試取前一天
+             from datetime import timedelta
+             df_price = dl.taiwan_stock_price_all(date=(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
+        
         df_info = dl.taiwan_stock_info()
         df = pd.merge(df_price, df_info[['stock_id', 'type']], on='stock_id')
         market_map = {"上市": "twse", "上櫃": "tpex"}
@@ -39,17 +44,18 @@ else:
 
 # 3. 執行按鈕
 if st.sidebar.button("🚀 開始掃描"):
+    all_targets = []
     if mode == "成交值排行掃描":
         if not market_choice:
             st.error("請選擇市場！")
-            st.stop()
-        with st.spinner("獲取排行資料中..."):
-            all_targets = get_top_turnover(market_choice, scan_limit)
+        else:
+            with st.spinner("獲取排行資料中..."):
+                all_targets = get_top_turnover(market_choice, scan_limit)
     else:
         all_targets = [s.strip() for s in stock_input.replace(',', ' ').split() if s.strip()]
 
     if not all_targets:
-        st.warning("無有效代號。")
+        st.warning("無有效代號。若是排行模式，可能是盤後資料尚未更新。")
     else:
         results = []
         progress_bar = st.progress(0)
@@ -58,10 +64,11 @@ if st.sidebar.button("🚀 開始掃描"):
         for i, stock_id in enumerate(all_targets):
             try:
                 status.text(f"正在掃描 ({i+1}/{len(all_targets)}): {stock_id}")
+                # 抓取股價
                 df = yf.download(f"{stock_id}.TW", period="3y", interval="1d", progress=False)
                 if len(df) < 240: continue
                 
-                # 指標計算 (使用 pandas_ta)
+                # 指標計算
                 df['ma400'] = ta.sma(df['Close'], length=400)
                 df['ma1200'] = ta.sma(df['Close'], length=1200)
                 df['ema2'] = ta.ema(df['Close'], length=2)
@@ -76,7 +83,7 @@ if st.sidebar.button("🚀 開始掃描"):
                 c_black = df['Close'].iloc[-1] < df['Open'].iloc[-1]
                 
                 if c_long and c_cluster and c_black:
-                    # 籌碼判斷
+                    # 籌碼分析
                     t_str = df.index[-1].strftime('%Y-%m-%d')
                     chip = dl.taiwan_stock_main_purchase(stock_id=stock_id, date=t_str)
                     main_b = chip['buy'].sum() - chip['sell'].sum()
@@ -86,7 +93,7 @@ if st.sidebar.button("🚀 開始掃描"):
                             "代號": stock_id,
                             "價格": f"{df['Close'].iloc[-1]:.1f}",
                             "主力買超": f"{int(main_b)}張",
-                            "糾結度": f"{std_ratio:.2%}"
+                            "均線糾結度": f"{std_r:.2%}"
                         })
             except: pass
             progress_bar.progress((i + 1) / len(all_targets))
@@ -96,4 +103,4 @@ if st.sidebar.button("🚀 開始掃描"):
             st.success("✅ 篩選完成！符合標的如下：")
             st.dataframe(pd.DataFrame(results), use_container_width=True)
         else:
-            st.info("掃描結束，今日清單中無符合條件標的。")
+            st.info("掃描結束，今日清單中無同時符合「月線長多+均線糾結+黑K+主力買」之標的。")
